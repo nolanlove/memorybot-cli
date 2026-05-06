@@ -21,7 +21,7 @@ def main() -> int:
     print("This is a placeholder release. The full CLI is under construction.")
     print("Learn more: https://www.memorybot.com")
     print()
-    print("Installed version: 0.0.1")
+    print("Installed version: 0.0.2")
     return 0
 
 
