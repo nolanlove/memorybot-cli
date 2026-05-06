@@ -52,6 +52,7 @@ class Config:
         self.refresh_token = None
         self.expires_at = None
         self.user_email = None
+        self.server_url = DEFAULT_SERVER_URL
 
 
 def resolve_server_url(cli_override: Optional[str], cfg: Config) -> str:
