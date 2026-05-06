@@ -33,10 +33,19 @@ stream live; the script's exit code propagates.
 mb run eaQ5a4Hgxl              # default: read-only token, 5min TTL
 mb run eaQ5a4Hgxl --write      # mint a write-capable token
 mb run eaQ5a4Hgxl --ttl 600    # 10-minute TTL
+mb run eaQ5a4Hgxl --no-log     # skip writing the run-audit memo
 ```
 
 Inside the script, `from memorybot.client import Client` picks up the env
 vars set by the runner. Requires [`uv`](https://docs.astral.sh/uv/) on `PATH`.
+
+### Audit trail
+
+The minted token carries the script's sid as audit metadata, so server logs
+attribute every API call back to the originating script. After the script
+exits, `mb run` posts a `script_run` memo with rc, scope, duration, and a
+captured stdout excerpt, plus an `instance_of` ref pointing to the script.
+Pass `--no-log` to skip the memo (the server-side attribution still happens).
 
 ## Configuration
 

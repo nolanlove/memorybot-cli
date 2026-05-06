@@ -265,6 +265,68 @@ def query_cmd(
 
 
 _PYTHON_BLOCK_RE = re.compile(r"```python\s*\n(.*?)```", re.DOTALL)
+_RUN_LOG_MAX_BYTES = 8000
+
+
+def _truncate_for_log(text: str, limit: int = _RUN_LOG_MAX_BYTES) -> str:
+    if len(text) <= limit:
+        return text
+    head = text[: limit // 2]
+    tail = text[-limit // 2 :]
+    return f"{head}\n\n... [truncated {len(text) - limit} bytes] ...\n\n{tail}"
+
+
+def _post_script_run_memo(
+    client: "Client",
+    *,
+    script_sid: str,
+    script_title: str,
+    rc: int,
+    scope: str,
+    ttl: int,
+    duration_ms: int,
+    started_iso: str,
+    stdout_text: str,
+) -> None:
+    """Write a memo recording this run, with an instance_of ref to the script.
+
+    Best-effort: a failure here (most often a read-only auth token) is
+    surfaced as a warning but does not change the run's exit code.
+    """
+    excerpt = _truncate_for_log(stdout_text)
+    body = (
+        f"- Script: `{script_sid}` ({script_title})\n"
+        f"- Exit code: {rc}\n"
+        f"- Scope: `{scope}`\n"
+        f"- TTL: {ttl}s\n"
+        f"- Duration: {duration_ms} ms\n"
+        f"- Started: {started_iso}\n\n"
+        f"## Output\n\n```\n{excerpt}\n```\n"
+    )
+    payload = {
+        "operations": [
+            {
+                "action": "create",
+                "memos": [
+                    {
+                        "title": f"Run of {script_title} — rc={rc}",
+                        "structured_data": {
+                            "memo": {"content": body, "content_type": "markdown"},
+                        },
+                        "refs": [{"to_memo_sid": script_sid, "ref_type": "instance_of"}],
+                    }
+                ],
+            }
+        ]
+    }
+    try:
+        client.tool_exec("manage_memos", payload)
+    except (APIError, ToolError) as e:
+        err_console.print(
+            f"[yellow]warn:[/yellow] script_run memo write failed: {e}\n"
+            "[dim]Your CLI auth token may be read-only. Mint a write-capable "
+            "token if you want runs logged.[/dim]"
+        )
 
 
 @app.command("run")
@@ -274,6 +336,9 @@ def run_cmd(
         False, "--write", help="Mint a write-capable token (default: read-only)."
     ),
     ttl: int = typer.Option(300, "--ttl", help="Token TTL in seconds (60–28800)."),
+    no_log: bool = typer.Option(
+        False, "--no-log", help="Skip writing a script_run memo on completion."
+    ),
     base_url: Optional[str] = typer.Option(
         None, "--base-url", help="Override server URL for this run."
     ),
@@ -281,11 +346,17 @@ def run_cmd(
     """Execute a Python script memo: fetch by sid, run via uv, stream stdout.
 
     Extracts the first ```python``` fenced block from the memo's content,
-    mints a fresh short-TTL session token (read-only by default), and runs
-    the code via `uv run --python $(which python3) <tmpfile>` with
-    MEMORYBOT_TOKEN and MEMORYBOT_URL set in the env. Stdout and stderr
-    stream live; exit code propagates.
+    mints a fresh short-TTL session token bound to this script_sid as audit
+    metadata, and runs the code via `uv run --python $(which python3)
+    <tmpfile>` with MEMORYBOT_TOKEN and MEMORYBOT_URL set in the env.
+    Stdout and stderr stream live; exit code propagates.
+
+    On completion, posts a script_run memo with an instance_of ref to the
+    script (suppressed by --no-log).
     """
+    import datetime as _dt
+    import time as _time
+
     if shutil.which("uv") is None:
         err_console.print(
             "[red]uv not found on PATH.[/red] Install: https://docs.astral.sh/uv/"
@@ -316,8 +387,10 @@ def run_cmd(
         err_console.print(f"[red]No memo found with sid {sid}.[/red]")
         raise typer.Exit(code=1)
 
-    content = (
-        memos[0].get("structured_data", {}).get("memo", {}).get("content", "")
+    sd = memos[0].get("structured_data", {}) or {}
+    content = sd.get("memo", {}).get("content", "")
+    script_title = (
+        memos[0].get("title") or sd.get("memo", {}).get("title") or sid
     )
     match = _PYTHON_BLOCK_RE.search(content)
     if not match:
@@ -329,7 +402,9 @@ def run_cmd(
 
     scope = "read write" if write else "read"
     try:
-        token_resp = client.mint_session_token(scope=scope, ttl_seconds=ttl)
+        token_resp = client.mint_session_token(
+            scope=scope, ttl_seconds=ttl, script_sid=sid
+        )
     except (APIError, ToolError) as e:
         err_console.print(f"[red]Token mint failed:[/red] {e}")
         raise typer.Exit(code=1)
@@ -337,6 +412,10 @@ def run_cmd(
     env = os.environ.copy()
     env["MEMORYBOT_TOKEN"] = token_resp["token"]
     env["MEMORYBOT_URL"] = client.server_url
+
+    captured: list[str] = []
+    started_iso = _dt.datetime.now(_dt.timezone.utc).isoformat()
+    started_at = _time.monotonic()
 
     tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False)
     try:
@@ -354,12 +433,27 @@ def run_cmd(
         for line in proc.stdout:
             sys.stdout.write(line)
             sys.stdout.flush()
+            captured.append(line)
         rc = proc.wait()
     finally:
         try:
             os.unlink(tmp.name)
         except OSError:
             pass
+    duration_ms = int((_time.monotonic() - started_at) * 1000)
+
+    if not no_log:
+        _post_script_run_memo(
+            client,
+            script_sid=sid,
+            script_title=script_title,
+            rc=rc,
+            scope=scope,
+            ttl=ttl,
+            duration_ms=duration_ms,
+            started_iso=started_iso,
+            stdout_text="".join(captured),
+        )
     raise typer.Exit(code=rc)
 
 
