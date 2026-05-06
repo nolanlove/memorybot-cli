@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import os
-from typing import Any
+from typing import Any, Optional
 
 import httpx
 
 from .auth import refresh_access_token
-from .config import Config, resolve_access_token
+from .config import Config, resolve_access_token, resolve_server_url
 
 TOOL_EXEC_PATH = "/memory/api/tool-exec/"
 
@@ -29,9 +29,9 @@ class ToolError(RuntimeError):
 
 
 class Client:
-    def __init__(self, cfg: Config, server_url: str) -> None:
-        self.cfg = cfg
-        self.server_url = server_url
+    def __init__(self, cfg: Optional[Config] = None, server_url: Optional[str] = None) -> None:
+        self.cfg = cfg if cfg is not None else Config.load()
+        self.server_url = server_url or resolve_server_url(None, self.cfg)
 
     def _token(self) -> str:
         token = resolve_access_token(self.cfg)
