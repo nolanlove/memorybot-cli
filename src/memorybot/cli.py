@@ -3,6 +3,12 @@
 from __future__ import annotations
 
 import json as json_module
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
 import time
 from typing import Any, Optional
 
@@ -256,6 +262,105 @@ def query_cmd(
 
     suffix = " (truncated at 200)" if result.get("truncated") else ""
     err_console.print(f"[dim]{result.get('row_count', len(rows))} rows{suffix}[/dim]")
+
+
+_PYTHON_BLOCK_RE = re.compile(r"```python\s*\n(.*?)```", re.DOTALL)
+
+
+@app.command("run")
+def run_cmd(
+    sid: str = typer.Argument(..., help="Script memo sid (10-char base62)."),
+    write: bool = typer.Option(
+        False, "--write", help="Mint a write-capable token (default: read-only)."
+    ),
+    ttl: int = typer.Option(300, "--ttl", help="Token TTL in seconds (60–28800)."),
+    base_url: Optional[str] = typer.Option(
+        None, "--base-url", help="Override server URL for this run."
+    ),
+) -> None:
+    """Execute a Python script memo: fetch by sid, run via uv, stream stdout.
+
+    Extracts the first ```python``` fenced block from the memo's content,
+    mints a fresh short-TTL session token (read-only by default), and runs
+    the code via `uv run --python $(which python3) <tmpfile>` with
+    MEMORYBOT_TOKEN and MEMORYBOT_URL set in the env. Stdout and stderr
+    stream live; exit code propagates.
+    """
+    if shutil.which("uv") is None:
+        err_console.print(
+            "[red]uv not found on PATH.[/red] Install: https://docs.astral.sh/uv/"
+        )
+        raise typer.Exit(code=127)
+    python3 = shutil.which("python3")
+    if python3 is None:
+        err_console.print("[red]python3 not found on PATH.[/red]")
+        raise typer.Exit(code=127)
+
+    client = _client(base_url)
+
+    try:
+        res = client.tool_exec(
+            "manage_memos",
+            {"operations": [{"action": "get", "memo_sids": [sid], "full": True}]},
+        )
+    except APIError as e:
+        err_console.print(f"[red]Fetch error:[/red] {e}")
+        raise typer.Exit(code=1)
+    except ToolError as e:
+        err_console.print(f"[red]Tool error:[/red] {e.message}")
+        raise typer.Exit(code=1)
+
+    inner = _unwrap_single_op(res)
+    memos = inner.get("memos") if isinstance(inner, dict) else []
+    if not memos:
+        err_console.print(f"[red]No memo found with sid {sid}.[/red]")
+        raise typer.Exit(code=1)
+
+    content = (
+        memos[0].get("structured_data", {}).get("memo", {}).get("content", "")
+    )
+    match = _PYTHON_BLOCK_RE.search(content)
+    if not match:
+        err_console.print(
+            f"[red]No fenced ```python``` block found in memo {sid}.[/red]"
+        )
+        raise typer.Exit(code=1)
+    code = match.group(1)
+
+    scope = "read write" if write else "read"
+    try:
+        token_resp = client.mint_session_token(scope=scope, ttl_seconds=ttl)
+    except (APIError, ToolError) as e:
+        err_console.print(f"[red]Token mint failed:[/red] {e}")
+        raise typer.Exit(code=1)
+
+    env = os.environ.copy()
+    env["MEMORYBOT_TOKEN"] = token_resp["token"]
+    env["MEMORYBOT_URL"] = client.server_url
+
+    tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False)
+    try:
+        tmp.write(code)
+        tmp.close()
+        proc = subprocess.Popen(
+            ["uv", "run", "--python", python3, tmp.name],
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+        )
+        assert proc.stdout is not None
+        for line in proc.stdout:
+            sys.stdout.write(line)
+            sys.stdout.flush()
+        rc = proc.wait()
+    finally:
+        try:
+            os.unlink(tmp.name)
+        except OSError:
+            pass
+    raise typer.Exit(code=rc)
 
 
 def main() -> int:
