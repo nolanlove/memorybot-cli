@@ -1,10 +1,10 @@
-"""MemoryBot CLI — Typer app."""
+"""MemoryBot CLI — Typer app. All commands route through tool-exec."""
 
 from __future__ import annotations
 
 import json as json_module
 import time
-from typing import Optional
+from typing import Any, Optional
 
 import typer
 from rich.console import Console
@@ -12,7 +12,7 @@ from rich.table import Table
 
 from . import __version__
 from .auth import fetch_user_email, login_flow
-from .client import APIError, Client
+from .client import APIError, Client, ToolError
 from .config import Config, config_path, resolve_server_url
 
 app = typer.Typer(
@@ -41,6 +41,24 @@ def _root(
     ),
 ) -> None:
     pass
+
+
+def _client(base_url: Optional[str]) -> Client:
+    cfg = Config.load()
+    server_url = resolve_server_url(base_url, cfg)
+    return Client(cfg, server_url)
+
+
+def _unwrap_single_op(result: dict) -> dict:
+    """manage_* responses come wrapped as {results: [op_result]}.
+
+    Single-op CLI commands want the inner result directly.
+    """
+    if isinstance(result, dict) and "results" in result and isinstance(result["results"], list):
+        items = result["results"]
+        if len(items) == 1:
+            return items[0]
+    return result
 
 
 @app.command()
@@ -97,7 +115,7 @@ def whoami() -> None:
     typer.echo(who)
 
 
-def _print_memo_table(memos: list[dict]) -> None:
+def _print_memos_table(memos: list[dict]) -> None:
     if not memos:
         err_console.print("[dim](no results)[/dim]")
         return
@@ -107,7 +125,11 @@ def _print_memo_table(memos: list[dict]) -> None:
     table.add_column("Tags", style="magenta")
     for m in memos:
         title = m.get("title") or m.get("structured_data", {}).get("memo", {}).get("title") or "(untitled)"
-        tags = ", ".join(t.get("name", "") for t in m.get("tags", []) if t.get("name"))
+        tag_field = m.get("tags") or []
+        if tag_field and isinstance(tag_field[0], dict):
+            tags = ", ".join(t.get("name", "") for t in tag_field if t.get("name"))
+        else:
+            tags = ", ".join(str(t) for t in tag_field)
         table.add_row(m.get("sid", ""), title, tags)
     console.print(table)
 
@@ -115,35 +137,39 @@ def _print_memo_table(memos: list[dict]) -> None:
 @memo_app.command("search")
 def memo_search(
     query: str = typer.Argument(..., help="Search query."),
-    limit: int = typer.Option(20, "--limit", "-n", help="Max results (1-100)."),
-    mode: str = typer.Option("combined", "--mode", help="combined | fts | trigram | semantic."),
+    limit: int = typer.Option(20, "--limit", "-n", help="Max results."),
     tag_sid: Optional[str] = typer.Option(None, "--tag-sid", help="Filter under tag sid(s), comma-separated."),
     json: bool = typer.Option(False, "--json", help="Emit raw JSON."),
     base_url: Optional[str] = typer.Option(None, "--base-url", help="Override server URL for this run."),
 ) -> None:
-    """Search memos."""
-    cfg = Config.load()
-    server_url = resolve_server_url(base_url, cfg)
-    client = Client(cfg, server_url)
-
-    params: dict[str, object] = {"q": query, "limit": limit, "mode": mode}
+    """Search memos via manage_memos action=search."""
+    op: dict[str, Any] = {"action": "search", "query": query, "limit": limit}
     if tag_sid:
-        params["tag_sids"] = tag_sid
+        op["tag_sids"] = [s.strip() for s in tag_sid.split(",") if s.strip()]
 
     try:
-        data = client.get("/memory/api/memos/search", params=params)
+        result = _client(base_url).tool_exec("manage_memos", {"operations": [op]})
     except APIError as e:
         err_console.print(f"[red]API error:[/red] {e}")
         raise typer.Exit(code=1)
+    except ToolError as e:
+        err_console.print(f"[red]Tool error:[/red] {e.message}")
+        raise typer.Exit(code=1)
+
+    inner = _unwrap_single_op(result)
 
     if json:
-        typer.echo(json_module.dumps(data, indent=2))
+        typer.echo(json_module.dumps(inner, indent=2))
         return
-    _print_memo_table(data.get("memos", []))
-    err_console.print(
-        f"[dim]{data.get('count', 0)} of {data.get('total_count', 0)} results "
-        f"(mode: {data.get('mode', mode)})[/dim]"
-    )
+
+    memos = inner.get("memos") if isinstance(inner, dict) else None
+    if memos is None and isinstance(inner, list):
+        memos = inner
+    _print_memos_table(memos or [])
+    if isinstance(inner, dict):
+        count = inner.get("count", len(memos or []))
+        total = inner.get("total_count", count)
+        err_console.print(f"[dim]{count} of {total} results[/dim]")
 
 
 @memo_app.command("get")
@@ -152,18 +178,20 @@ def memo_get(
     json: bool = typer.Option(False, "--json", help="Emit raw JSON."),
     base_url: Optional[str] = typer.Option(None, "--base-url", help="Override server URL for this run."),
 ) -> None:
-    """Fetch a single memo by sid."""
-    cfg = Config.load()
-    server_url = resolve_server_url(base_url, cfg)
-    client = Client(cfg, server_url)
+    """Fetch a single memo via manage_memos action=get."""
+    op = {"action": "get", "memo_sids": [sid], "full": True}
 
     try:
-        data = client.get("/memory/api/memos/list", params={"sids": sid})
+        result = _client(base_url).tool_exec("manage_memos", {"operations": [op]})
     except APIError as e:
         err_console.print(f"[red]API error:[/red] {e}")
         raise typer.Exit(code=1)
+    except ToolError as e:
+        err_console.print(f"[red]Tool error:[/red] {e.message}")
+        raise typer.Exit(code=1)
 
-    memos = data.get("memos", [])
+    inner = _unwrap_single_op(result)
+    memos = inner.get("memos") if isinstance(inner, dict) else (inner if isinstance(inner, list) else [])
     if not memos:
         err_console.print(f"[red]No memo found with sid {sid}.[/red]")
         raise typer.Exit(code=1)
@@ -176,7 +204,11 @@ def memo_get(
     sd = memo.get("structured_data", {}) or {}
     title = memo.get("title") or sd.get("memo", {}).get("title") or "(untitled)"
     body = sd.get("memo", {}).get("content", "")
-    tags = ", ".join(t.get("name", "") for t in memo.get("tags", []) if t.get("name"))
+    tag_field = memo.get("tags") or []
+    if tag_field and isinstance(tag_field[0], dict):
+        tags = ", ".join(t.get("name", "") for t in tag_field if t.get("name"))
+    else:
+        tags = ", ".join(str(t) for t in tag_field)
 
     console.print(f"[bold cyan]{memo.get('sid', '')}[/bold cyan]  [bold]{title}[/bold]")
     if tags:
@@ -184,6 +216,46 @@ def memo_get(
     if body:
         console.print()
         console.print(body)
+
+
+@app.command("query")
+def query_cmd(
+    sql: str = typer.Argument(..., help="A read-only SELECT against the v_* views."),
+    json: bool = typer.Option(False, "--json", help="Emit raw JSON."),
+    base_url: Optional[str] = typer.Option(None, "--base-url", help="Override server URL for this run."),
+) -> None:
+    """Run a read-only SQL query against the user's data (run_query tool)."""
+    try:
+        result = _client(base_url).tool_exec("run_query", {"sql": sql})
+    except APIError as e:
+        err_console.print(f"[red]API error:[/red] {e}")
+        raise typer.Exit(code=1)
+    except ToolError as e:
+        err_console.print(f"[red]Query error:[/red] {e.message}")
+        raise typer.Exit(code=1)
+
+    if json:
+        typer.echo(json_module.dumps(result, indent=2))
+        return
+
+    columns = result.get("columns", [])
+    rows = result.get("rows", [])
+    if not rows:
+        err_console.print("[dim](no rows)[/dim]")
+        return
+
+    table = Table(show_lines=False)
+    for col in columns:
+        table.add_column(col, overflow="fold")
+    for row in rows:
+        if isinstance(row, dict):
+            table.add_row(*[str(row.get(c, "")) for c in columns])
+        else:
+            table.add_row(*[str(v) for v in row])
+    console.print(table)
+
+    suffix = " (truncated at 200)" if result.get("truncated") else ""
+    err_console.print(f"[dim]{result.get('row_count', len(rows))} rows{suffix}[/dim]")
 
 
 def main() -> int:
