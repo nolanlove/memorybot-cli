@@ -63,3 +63,15 @@ def resolve_server_url(cli_override: Optional[str], cfg: Config) -> str:
     if env:
         return env.rstrip("/")
     return cfg.server_url.rstrip("/")
+
+
+def resolve_access_token(cfg: Config) -> Optional[str]:
+    """Precedence: MEMORYBOT_TOKEN env > config.
+
+    Env-var path is used by LLM Python sandboxes that bootstrap auth via
+    the MCP `mint_session_token` tool — no `mb login` needed.
+    """
+    env = os.environ.get("MEMORYBOT_TOKEN")
+    if env:
+        return env.strip()
+    return cfg.access_token

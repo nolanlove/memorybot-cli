@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import os
 from typing import Any
 
 import httpx
 
 from .auth import refresh_access_token
-from .config import Config
+from .config import Config, resolve_access_token
 
 TOOL_EXEC_PATH = "/memory/api/tool-exec/"
 
@@ -32,11 +33,17 @@ class Client:
         self.cfg = cfg
         self.server_url = server_url
 
+    def _token(self) -> str:
+        token = resolve_access_token(self.cfg)
+        if not token:
+            raise RuntimeError(
+                "No credentials. Run `mb login`, or set MEMORYBOT_TOKEN."
+            )
+        return token
+
     def _headers(self) -> dict[str, str]:
-        if not self.cfg.access_token:
-            raise RuntimeError("Not logged in. Run `mb login`.")
         return {
-            "Authorization": f"Bearer {self.cfg.access_token}",
+            "Authorization": f"Bearer {self._token()}",
             "Content-Type": "application/json",
         }
 
@@ -50,7 +57,11 @@ class Client:
         body = {"tool": tool, "arguments": arguments}
 
         resp = httpx.post(url, headers=self._headers(), json=body, timeout=60.0)
-        if resp.status_code == 401 and refresh_access_token(self.cfg, self.server_url):
+        # Only attempt refresh when using the saved-config token; env-var
+        # tokens are short-lived by design and the caller is expected to
+        # re-mint via mint_session_token instead.
+        env_token = bool(os.environ.get("MEMORYBOT_TOKEN"))
+        if resp.status_code == 401 and not env_token and refresh_access_token(self.cfg, self.server_url):
             resp = httpx.post(url, headers=self._headers(), json=body, timeout=60.0)
         if resp.status_code >= 400:
             raise APIError(resp.status_code, resp.text)
