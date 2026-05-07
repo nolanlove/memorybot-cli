@@ -18,7 +18,11 @@ import httpx
 from .config import Config
 
 CLIENT_NAME = "MemoryBot CLI"
-SCOPES = "read write"
+# `cli` is the capability scope that authenticates the HTTP tool-exec API.
+# The CLI never talks the MCP transport — it talks tool-exec — so we never
+# request `mcp` here. The server's per-Application policy will also enforce
+# this and strip any `mcp` that snuck in.
+SCOPES = "read write cli"
 
 
 def _b64url(data: bytes) -> str:

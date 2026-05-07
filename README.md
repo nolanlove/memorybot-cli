@@ -24,28 +24,32 @@ mb run <SID>          # execute a Python script memo
 ## Running script memos
 
 `mb run <sid>` fetches the memo, extracts the first ` ```python ` fenced
-block, mints a fresh short-TTL session token (read-only by default), and
-runs the code via `uv run --python $(which python3) <tmpfile>` with
-`MEMORYBOT_TOKEN` and `MEMORYBOT_URL` set in the env. Stdout and stderr
-stream live; the script's exit code propagates.
+block, and runs the code via `uv run --python $(which python3) <tmpfile>`
+with `MEMORYBOT_TOKEN` and `MEMORYBOT_URL` set in the env. Stdout and
+stderr stream live; the script's exit code propagates.
 
 ```bash
-mb run eaQ5a4Hgxl              # default: read-only token, 5min TTL
-mb run eaQ5a4Hgxl --write      # mint a write-capable token
-mb run eaQ5a4Hgxl --ttl 600    # 10-minute TTL
+mb run eaQ5a4Hgxl              # run with whatever token the CLI is using
 mb run eaQ5a4Hgxl --no-log     # skip writing the run-audit memo
 ```
 
 Inside the script, `from memorybot.client import Client` picks up the env
 vars set by the runner. Requires [`uv`](https://docs.astral.sh/uv/) on `PATH`.
 
+The CLI does **not** mint its own per-run token. The script subprocess
+inherits the same identity (`MEMORYBOT_TOKEN`) the CLI is using. To get a
+narrower scope, shorter TTL, or `script_sid`-bound audit attribution, mint
+a cli token via the **`mint_cli_token`** MCP tool (Claude Desktop /
+claude.ai) first and set its output as `MEMORYBOT_TOKEN` before invoking
+`mb run`.
+
 ### Audit trail
 
-The minted token carries the script's sid as audit metadata, so server logs
-attribute every API call back to the originating script. After the script
-exits, `mb run` posts a `script_run` memo with rc, scope, duration, and a
-captured stdout excerpt, plus an `instance_of` ref pointing to the script.
-Pass `--no-log` to skip the memo (the server-side attribution still happens).
+After the script exits, `mb run` posts a memo titled `Run of <script-title>
+— rc=<N>` with rc, duration, started_at, and a captured stdout excerpt,
+plus an `instance_of` ref pointing to the script. Pass `--no-log` to skip
+the memo. If your token was minted with `script_sid=<sid>`, every API call
+the script makes is also attributed in server logs.
 
 ## Configuration
 

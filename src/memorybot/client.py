@@ -103,23 +103,3 @@ class Client:
             out.extend(res.get("refs", []))
         return out
 
-    def mint_session_token(
-        self,
-        scope: str = "read",
-        ttl_seconds: int = 300,
-        script_sid: Optional[str] = None,
-    ) -> dict:
-        """Mint a short-lived OAuth bearer scoped to ``scope`` (default read-only).
-
-        Returns ``{token, expires_at, scope, script_sid, usage}``. Raises
-        ToolError if the requested scope exceeds the caller's, or APIError
-        on HTTP failure.
-
-        Pass ``script_sid`` (10-char base62) to bind the token to a script
-        memo as audit metadata; subsequent API calls authenticated with this
-        token surface the script_sid in server logs.
-        """
-        args: dict[str, Any] = {"ttl_seconds": ttl_seconds, "scope": scope}
-        if script_sid:
-            args["script_sid"] = script_sid
-        return self.tool_exec("mint_session_token", args)

@@ -282,8 +282,6 @@ def _post_script_run_memo(
     script_sid: str,
     script_title: str,
     rc: int,
-    scope: str,
-    ttl: int,
     duration_ms: int,
     started_iso: str,
     stdout_text: str,
@@ -297,8 +295,6 @@ def _post_script_run_memo(
     body = (
         f"- Script: `{script_sid}` ({script_title})\n"
         f"- Exit code: {rc}\n"
-        f"- Scope: `{scope}`\n"
-        f"- TTL: {ttl}s\n"
         f"- Duration: {duration_ms} ms\n"
         f"- Started: {started_iso}\n\n"
         f"## Output\n\n```\n{excerpt}\n```\n"
@@ -324,18 +320,14 @@ def _post_script_run_memo(
     except (APIError, ToolError) as e:
         err_console.print(
             f"[yellow]warn:[/yellow] script_run memo write failed: {e}\n"
-            "[dim]Your CLI auth token may be read-only. Mint a write-capable "
-            "token if you want runs logged.[/dim]"
+            "[dim]Your CLI token may be read-only. Mint a write-capable "
+            "cli token (or run `mb login`) if you want runs logged.[/dim]"
         )
 
 
 @app.command("run")
 def run_cmd(
     sid: str = typer.Argument(..., help="Script memo sid (10-char base62)."),
-    write: bool = typer.Option(
-        False, "--write", help="Mint a write-capable token (default: read-only)."
-    ),
-    ttl: int = typer.Option(300, "--ttl", help="Token TTL in seconds (60–28800)."),
     no_log: bool = typer.Option(
         False, "--no-log", help="Skip writing a script_run memo on completion."
     ),
@@ -346,13 +338,19 @@ def run_cmd(
     """Execute a Python script memo: fetch by sid, run via uv, stream stdout.
 
     Extracts the first ```python``` fenced block from the memo's content,
-    mints a fresh short-TTL session token bound to this script_sid as audit
-    metadata, and runs the code via `uv run --python $(which python3)
-    <tmpfile>` with MEMORYBOT_TOKEN and MEMORYBOT_URL set in the env.
-    Stdout and stderr stream live; exit code propagates.
+    runs the code via `uv run --python $(which python3) <tmpfile>` with
+    the same MEMORYBOT_TOKEN and MEMORYBOT_URL the CLI is currently
+    authenticated with. Stdout and stderr stream live; exit code
+    propagates.
 
-    On completion, posts a script_run memo with an instance_of ref to the
-    script (suppressed by --no-log).
+    The CLI does NOT mint a per-run token. The script subprocess
+    inherits the same identity the CLI is using. To narrow scope or
+    bind the token to this script's sid for audit attribution, mint a
+    cli token via the `mint_cli_token` MCP tool first and set its
+    output as `MEMORYBOT_TOKEN` before invoking `mb run`.
+
+    On completion, posts a script_run memo with an `instance_of` ref to
+    the script (suppressed by --no-log).
     """
     import datetime as _dt
     import time as _time
@@ -400,17 +398,16 @@ def run_cmd(
         raise typer.Exit(code=1)
     code = match.group(1)
 
-    scope = "read write" if write else "read"
-    try:
-        token_resp = client.mint_session_token(
-            scope=scope, ttl_seconds=ttl, script_sid=sid
-        )
-    except (APIError, ToolError) as e:
-        err_console.print(f"[red]Token mint failed:[/red] {e}")
-        raise typer.Exit(code=1)
-
     env = os.environ.copy()
-    env["MEMORYBOT_TOKEN"] = token_resp["token"]
+    # Pass through whatever token the CLI is using. If MEMORYBOT_TOKEN is
+    # already in the env (typical for agent-launched runs), it'll already
+    # be set; if the CLI is using a config token, surface it explicitly
+    # so the subprocess sees the same identity.
+    try:
+        env["MEMORYBOT_TOKEN"] = client._token()
+    except RuntimeError as e:
+        err_console.print(f"[red]No CLI token available:[/red] {e}")
+        raise typer.Exit(code=1)
     env["MEMORYBOT_URL"] = client.server_url
 
     captured: list[str] = []
@@ -448,8 +445,6 @@ def run_cmd(
             script_sid=sid,
             script_title=script_title,
             rc=rc,
-            scope=scope,
-            ttl=ttl,
             duration_ms=duration_ms,
             started_iso=started_iso,
             stdout_text="".join(captured),
