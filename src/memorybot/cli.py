@@ -16,10 +16,10 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
-from . import __version__
+from . import __version__, secret_store
 from .auth import fetch_user_email, login_flow
 from .client import APIError, Client, ToolError
-from .config import Config, config_path, resolve_server_url
+from .config import Config, config_path, has_legacy_file_secrets, resolve_server_url
 
 app = typer.Typer(
     name="mb",
@@ -46,7 +46,12 @@ def _root(
         None, "--version", callback=_version_callback, is_eager=True, help="Show version and exit."
     ),
 ) -> None:
-    pass
+    if has_legacy_file_secrets():
+        err_console.print(
+            "[yellow]Tip:[/yellow] your OAuth tokens are stored in plaintext at "
+            f"{config_path()}. Run [bold]mb migrate-keyring[/bold] to move them "
+            "into the OS keyring."
+        )
 
 
 def _client(base_url: Optional[str]) -> Client:
@@ -70,11 +75,28 @@ def _unwrap_single_op(result: dict) -> dict:
 @app.command()
 def login(
     base_url: Optional[str] = typer.Option(None, "--base-url", help="Override server URL for this run."),
+    no_keyring: bool = typer.Option(
+        False,
+        "--no-keyring",
+        help="Store OAuth secrets as plaintext in config.json instead of the OS keyring. "
+             "Only use this on systems without a working keyring backend (some headless Linux).",
+    ),
 ) -> None:
     """Authenticate via browser-based OAuth (authorization code + PKCE)."""
     cfg = Config.load()
     server_url = resolve_server_url(base_url, cfg)
     cfg.server_url = server_url
+
+    if no_keyring:
+        cfg.use_keyring = False
+    elif secret_store.keyring_available():
+        cfg.use_keyring = True
+    else:
+        err_console.print(
+            "[yellow]No OS keyring backend available; falling back to plaintext file storage.[/yellow] "
+            "Pass --no-keyring to silence this warning."
+        )
+        cfg.use_keyring = False
 
     err_console.print(f"Logging in to [bold]{server_url}[/bold]...")
     err_console.print("Opening browser for authorization. Waiting for callback...")
@@ -96,7 +118,10 @@ def login(
 
     who = cfg.user_email or "(email not available)"
     err_console.print(f"[green]Logged in as[/green] [bold]{who}[/bold]")
-    err_console.print(f"Credentials saved to {config_path()}")
+    if cfg.use_keyring:
+        err_console.print(f"Identity saved to {config_path()}; secrets stored in OS keyring.")
+    else:
+        err_console.print(f"Credentials saved to {config_path()}")
 
 
 @app.command()
@@ -108,6 +133,38 @@ def logout() -> None:
     cfg.client_secret = None
     cfg.save()
     err_console.print("Logged out.")
+
+
+@app.command(name="migrate-keyring")
+def migrate_keyring() -> None:
+    """Move existing plaintext OAuth secrets from config.json into the OS keyring."""
+    cfg = Config.load()
+    if cfg.use_keyring:
+        err_console.print("[green]Already using the OS keyring.[/green] Nothing to migrate.")
+        return
+    if not (cfg.access_token or cfg.refresh_token or cfg.client_secret):
+        err_console.print("No stored credentials to migrate. Run [bold]mb login[/bold] first.")
+        raise typer.Exit(code=1)
+    if not cfg.client_id:
+        err_console.print(
+            "[red]Cannot migrate:[/red] config.json is missing the OAuth client_id "
+            "(needed as the keyring lookup key). Re-run [bold]mb login[/bold]."
+        )
+        raise typer.Exit(code=1)
+    if not secret_store.keyring_available():
+        err_console.print(
+            "[red]No OS keyring backend available on this system.[/red] "
+            "Install / start your keyring daemon (e.g. gnome-keyring on Linux), "
+            "or stay on file storage and rely on the 0600 permissions."
+        )
+        raise typer.Exit(code=1)
+
+    cfg.use_keyring = True
+    cfg.save()  # writes secrets to keyring, scrubs them from the file
+    err_console.print(
+        f"[green]Migrated.[/green] Secrets moved to OS keyring; {config_path()} "
+        "now holds only identity fields."
+    )
 
 
 @app.command()
