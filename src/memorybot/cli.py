@@ -29,6 +29,8 @@ app = typer.Typer(
 )
 memo_app = typer.Typer(name="memo", help="Search, get, and manage memos.", no_args_is_help=True)
 app.add_typer(memo_app)
+media_app = typer.Typer(name="media", help="Upload and manage media files.", no_args_is_help=True)
+app.add_typer(media_app)
 
 console = Console()
 err_console = Console(stderr=True)
@@ -530,6 +532,85 @@ def run_cmd(
             stdout_text="".join(captured),
         )
     raise typer.Exit(code=rc)
+
+
+@media_app.command("upload")
+def media_upload(
+    path: str = typer.Argument(..., help="Path to the file to upload."),
+    title: Optional[str] = typer.Option(None, "--title", help="Memo title (defaults to filename)."),
+    tag: list[str] = typer.Option(
+        [],
+        "--tag",
+        help="Tag SID to attach (10-char base62). Repeat for multiple tags.",
+    ),
+    content_type: Optional[str] = typer.Option(
+        None,
+        "--content-type",
+        help="MIME type override. Auto-detected from filename if omitted.",
+    ),
+    json: bool = typer.Option(False, "--json", help="Emit raw JSON server response."),
+    base_url: Optional[str] = typer.Option(None, "--base-url", help="Override server URL for this run."),
+) -> None:
+    """Upload a local file to MemoryBot via the presigned-PUT path.
+
+    Three round trips: ``request_upload`` (mint a presigned S3 URL),
+    ``PUT`` raw bytes directly to S3, ``finalize_upload`` (create the
+    memo). Bytes never traverse the MemoryBot server.
+
+    Exit codes: 0 success, 1 server/network/tool error, 2 file-not-found
+    or other arg validation failure.
+    """
+    from pathlib import Path as _Path
+
+    p = _Path(path)
+    if not p.is_file():
+        err_console.print(f"[red]File not found:[/red] {path}")
+        raise typer.Exit(code=2)
+
+    client = _client(base_url)
+    tag_sids = [t.strip() for t in tag if t.strip()] or None
+
+    try:
+        result = client.upload_media(
+            p,
+            title=title,
+            tag_sids=tag_sids,
+            content_type=content_type,
+        )
+    except FileNotFoundError:
+        err_console.print(f"[red]File not found:[/red] {path}")
+        raise typer.Exit(code=2)
+    except APIError as e:
+        err_console.print(f"[red]API error:[/red] {e}")
+        raise typer.Exit(code=1)
+    except ToolError as e:
+        err_console.print(f"[red]Tool error:[/red] {e.message}")
+        raise typer.Exit(code=1)
+
+    if json:
+        typer.echo(json_module.dumps(result, indent=2))
+        return
+
+    inner = _unwrap_single_op(result)
+    sid = inner.get("memo_sid") or inner.get("sid") or ""
+    size = inner.get("size")
+    mime = inner.get("mime_type") or "?"
+    duplicate = inner.get("duplicate")
+
+    parts = [f"uploaded → memo [bold cyan]{sid}[/bold cyan]"]
+    if size is not None:
+        parts.append(f"({size} bytes, {mime})")
+    if duplicate:
+        parts.append("[yellow](duplicate of existing memo)[/yellow]")
+    console.print(" ".join(parts))
+
+    skipped = inner.get("skipped_tags") or []
+    if skipped:
+        names = ", ".join(t.get("name", t.get("sid", "?")) for t in skipped)
+        err_console.print(
+            f"[yellow]warn:[/yellow] skipped branch tag(s) {names} -- "
+            "tag a leaf instead."
+        )
 
 
 def main() -> int:

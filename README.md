@@ -13,13 +13,29 @@ pipx install memorybot
 ## Quick start
 
 ```bash
-mb login              # opens browser, OAuth flow
-mb memo search "..."  # full-text + semantic search
-mb memo get <SID>     # fetch a memo by sid
-mb run <SID>          # execute a Python script memo
+mb login                              # opens browser, OAuth flow
+mb memo search "..."                  # full-text + semantic search
+mb memo get <SID>                     # fetch a memo by sid
+mb run <SID>                          # execute a Python script memo
+mb media upload <PATH> [--tag <SID>]  # upload a file (image, PDF, etc.)
 ```
 
 `--json` on the read commands emits machine-readable output for piping into `jq`.
+
+## Uploading files
+
+```bash
+mb media upload ~/photo.jpg                       # auto-tagged under System > Uploads
+mb media upload ~/scan.pdf --tag <leaf-tag-sid>   # attach to a specific tag
+mb media upload ~/big.mp4 --json                  # machine-readable response
+```
+
+`mb media upload` runs a three-step dance: it asks the server for a presigned
+S3 URL, PUTs the bytes directly to S3 (the MemoryBot server never sees the
+file body), and finalizes by creating a Media memo. Re-uploading a file
+you've already uploaded short-circuits at the first step (no PUT, no wasted
+bandwidth) — the client SHA-256s the file once and the server matches it
+against existing memos.
 
 ## Running script memos
 
