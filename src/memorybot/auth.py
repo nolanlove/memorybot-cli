@@ -25,6 +25,107 @@ CLIENT_NAME = "MemoryBot CLI"
 SCOPES = "read write cli"
 
 
+# Branded "login complete" page served by the local one-shot callback
+# server. Everything has to be inline — the listener shuts down before the
+# browser can fetch external assets — so the lightbulb glyph is an inline
+# SVG echoing memory_bulb_alpha.png and the colors are the design-system
+# variables used elsewhere in the app (cream / ink / gold).
+_CALLBACK_PAGE = """<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>MemoryBot CLI — login complete</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@600&family=Source+Sans+3:wght@300;400&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --cream: #FAF8F5;
+    --warm-white: #FFFEFB;
+    --ink: #2C2A26;
+    --ink-light: #5C5A56;
+    --gold: #C9A959;
+    --gold-light: #E8D9A8;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: 'Source Sans 3', system-ui, sans-serif;
+    background: var(--cream);
+    color: var(--ink);
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 2rem;
+  }
+  .card {
+    background: var(--warm-white);
+    border: 1px solid var(--gold-light);
+    border-radius: 16px;
+    padding: 56px 64px;
+    max-width: 460px;
+    text-align: center;
+    box-shadow: 0 4px 24px rgba(44, 42, 38, 0.06);
+  }
+  .bulb {
+    width: 88px;
+    height: 88px;
+    margin: 0 auto 28px;
+    color: var(--gold);
+  }
+  h1 {
+    font-family: 'Playfair Display', Georgia, serif;
+    font-weight: 600;
+    font-size: 1.9rem;
+    letter-spacing: 0.01em;
+    margin-bottom: 8px;
+  }
+  .subtitle {
+    color: var(--ink-light);
+    font-size: 0.85rem;
+    text-transform: uppercase;
+    letter-spacing: 0.18em;
+    margin-bottom: 28px;
+  }
+  p {
+    color: var(--ink-light);
+    line-height: 1.55;
+    font-weight: 300;
+    font-size: 1rem;
+  }
+  .terminal {
+    font-family: 'SF Mono', Menlo, monospace;
+    font-size: 0.85rem;
+    color: var(--ink);
+    background: var(--cream);
+    padding: 4px 10px;
+    border-radius: 4px;
+  }
+</style>
+</head>
+<body>
+  <div class="card">
+    <svg class="bulb" viewBox="0 0 64 64" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+      <!-- Bulb body -->
+      <path d="M32 14 C24 14 19 20 19 27 C19 32 22 35 24.5 38 C26 40 26.5 41.5 26.5 43.5 L37.5 43.5 C37.5 41.5 38 40 39.5 38 C42 35 45 32 45 27 C45 20 40 14 32 14 Z"/>
+      <!-- Filament base lines -->
+      <path d="M27 46 L37 46 M27.5 49 L36.5 49 M30 52 C30 52.8 30.9 53.5 32 53.5 C33.1 53.5 34 52.8 34 52"/>
+      <!-- Rays -->
+      <line x1="32" y1="4" x2="32" y2="9"/>
+      <line x1="55" y1="27" x2="60" y2="27"/>
+      <line x1="4"  y1="27" x2="9"  y2="27"/>
+      <line x1="48.5" y1="10.5" x2="52" y2="7"/>
+      <line x1="12" y1="7" x2="15.5" y2="10.5"/>
+      <line x1="48.5" y1="43.5" x2="52" y2="47"/>
+      <line x1="12" y1="47" x2="15.5" y2="43.5"/>
+    </svg>
+    <h1>MemoryBot</h1>
+    <div class="subtitle">CLI · login complete</div>
+    <p>You're signed in. Close this tab and return to your <span class="terminal">mb</span> terminal.</p>
+  </div>
+</body>
+</html>"""
+
+
 def _b64url(data: bytes) -> str:
     return base64.urlsafe_b64encode(data).rstrip(b"=").decode()
 
@@ -55,13 +156,7 @@ class _CallbackHandler(http.server.BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.end_headers()
-        body = (
-            "<html><body style='font-family:system-ui;padding:2rem;'>"
-            "<h2>MemoryBot CLI — login complete</h2>"
-            "<p>You can close this tab and return to your terminal.</p>"
-            "</body></html>"
-        )
-        self.wfile.write(body.encode())
+        self.wfile.write(_CALLBACK_PAGE.encode())
 
     def log_message(self, format: str, *args: object) -> None:  # noqa: A002
         pass
