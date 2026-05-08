@@ -281,9 +281,32 @@ def memo_get(
         console.print(body)
 
 
+@app.command("schema")
+def schema_cmd(
+    json: bool = typer.Option(False, "--json", help="Emit raw JSON."),
+    base_url: Optional[str] = typer.Option(None, "--base-url", help="Override server URL for this run."),
+) -> None:
+    """Print the read-only SQL schema (views, columns, example queries)."""
+    try:
+        result = _client(base_url).tool_exec("describe_schema", {})
+    except APIError as e:
+        err_console.print(f"[red]API error:[/red] {e}")
+        raise typer.Exit(code=1)
+    except ToolError as e:
+        err_console.print(f"[red]{e.message}[/red]")
+        raise typer.Exit(code=1)
+
+    if json:
+        typer.echo(json_module.dumps(result, indent=2))
+        return
+
+    description = result.get("description") or ""
+    typer.echo(description)
+
+
 @app.command("query")
 def query_cmd(
-    sql: str = typer.Argument(..., help="A read-only SELECT against the v_* views."),
+    sql: str = typer.Argument(..., help="A read-only SELECT against the v_* views. Run `mb schema` to see what's queryable."),
     json: bool = typer.Option(False, "--json", help="Emit raw JSON."),
     base_url: Optional[str] = typer.Option(None, "--base-url", help="Override server URL for this run."),
 ) -> None:
