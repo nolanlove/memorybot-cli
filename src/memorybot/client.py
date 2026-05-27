@@ -13,7 +13,7 @@ import httpx
 from .auth import refresh_access_token
 from .config import Config, resolve_access_token, resolve_server_url
 
-TOOL_EXEC_PATH = "/memory/api/tool-exec/"
+TOOL_EXEC_PATH = "/api/tool-exec/"
 
 # Streaming chunk size for hashing the file before upload. 1MB is a good
 # default: small enough to keep memory bounded, large enough that hashing a
