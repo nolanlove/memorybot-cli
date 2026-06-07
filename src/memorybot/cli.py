@@ -346,6 +346,93 @@ def query_cmd(
     err_console.print(f"[dim]{result.get('row_count', len(rows))} rows{suffix}[/dim]")
 
 
+def _inbox_cursor_path(agent_sid: str):
+    """Per-agent cursor file, next to config.json (e.g.
+    ~/.config/memorybot/inbox-cursor-<sid>.txt). Keeps each message surfacing
+    exactly once across `mb inbox` calls without the caller tracking state."""
+    return config_path().parent / f"inbox-cursor-{agent_sid}.txt"
+
+
+def _format_inbox(messages: list[dict]) -> str:
+    """Plain-text (no ANSI) rendering of new inbox messages, designed to be
+    injected verbatim into a UserPromptSubmit hook's additionalContext."""
+    lines = [f"📨 {len(messages)} new agent DM(s):", ""]
+    for m in messages:
+        sender = m.get("sender_name") or m.get("sender_sid") or "?"
+        thread = m.get("thread_title") or "(thread)"
+        sent = (m.get("sent_at") or "")[11:16]  # HH:MM slice of the ISO ts
+        when = f" {sent}" if sent else ""
+        lines.append(f'[{sender} → "{thread}"]{when}')
+        body = (m.get("body") or "").strip()
+        for bl in body.splitlines() or [""]:
+            lines.append(f"  {bl}")
+        lines.append("")
+    return "\n".join(lines).rstrip() + "\n"
+
+
+@app.command("inbox")
+def inbox_cmd(
+    agent: Optional[str] = typer.Option(
+        None, "--agent", "-a", help="Your agent memo sid (10-char base62)."
+    ),
+    since: Optional[str] = typer.Option(
+        None, "--since", help="ISO-8601 cursor; overrides the stored per-agent cursor."
+    ),
+    no_cursor: bool = typer.Option(
+        False, "--no-cursor", help="Don't read or write the persisted per-agent cursor file."
+    ),
+    json: bool = typer.Option(False, "--json", help="Emit raw JSON {messages, cursor, threads}."),
+    base_url: Optional[str] = typer.Option(None, "--base-url", help="Override server URL for this run."),
+) -> None:
+    """Pull new agent-to-agent DMs (instant, non-blocking).
+
+    Hits /api/agent/<sid>/inbox/poll, prints any NEW messages, and advances a
+    per-agent cursor so each surfaces exactly once. Prints NOTHING to stdout
+    when the inbox is empty — so the output can be dropped straight into a
+    UserPromptSubmit hook. This replaces the retired persistent inbox Monitor.
+
+    Exit codes: 0 = success (with or without messages), 1 = API/network error,
+    2 = bad arguments (missing --agent).
+    """
+    if not agent:
+        err_console.print("[red]--agent <your agent sid> is required.[/red]")
+        raise typer.Exit(code=2)
+
+    cursor_file = None if no_cursor else _inbox_cursor_path(agent)
+    effective_since = since
+    if effective_since is None and cursor_file is not None and cursor_file.exists():
+        effective_since = cursor_file.read_text().strip() or None
+
+    try:
+        result = _client(base_url).inbox_poll(agent, since=effective_since)
+    except APIError as e:
+        err_console.print(f"[red]API error:[/red] {e}")
+        raise typer.Exit(code=1)
+    except RuntimeError as e:  # no credentials
+        err_console.print(f"[red]{e}[/red]")
+        raise typer.Exit(code=1)
+
+    messages = result.get("messages") or []
+    new_cursor = result.get("cursor")
+
+    # Persist the advanced cursor BEFORE printing, so a crash mid-print can
+    # never replay a message — at worst it's dropped (the cursor moved). The
+    # server stream uses the same "advance only on return" model.
+    if cursor_file is not None and new_cursor:
+        cursor_file.parent.mkdir(parents=True, exist_ok=True)
+        cursor_file.write_text(new_cursor)
+
+    if json:
+        typer.echo(json_module.dumps(result, indent=2))
+        return
+
+    if messages:
+        # Plain stdout (no rich markup) so a hook can inject it verbatim.
+        sys.stdout.write(_format_inbox(messages))
+        sys.stdout.flush()
+    # Empty inbox → print nothing, exit 0.
+
+
 _PYTHON_BLOCK_RE = re.compile(r"```python\s*\n(.*?)```", re.DOTALL)
 _RUN_LOG_MAX_BYTES = 8000
 

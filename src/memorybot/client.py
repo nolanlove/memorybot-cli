@@ -79,6 +79,42 @@ class Client:
             raise ToolError(data["error"])
         return data
 
+    def inbox_poll(
+        self,
+        agent_sid: str,
+        since: Optional[str] = None,
+        include_reactions: bool = False,
+    ) -> dict:
+        """GET /api/agent/<sid>/inbox/poll — instant, non-blocking inbox read.
+
+        Returns ``{"messages": [...], "cursor": "<iso>", "threads": [...]}``.
+        Unlike the inbox *stream* endpoint this never long-polls: it returns
+        whatever is queued right now plus a cursor to pass back next call.
+        This is what the ``mb inbox`` command (and the UserPromptSubmit inbox
+        hook behind it) calls every user turn, so it stays fast.
+
+        Raises APIError on HTTP error. Auto-refreshes the saved-config token
+        once on 401 (same policy as ``tool_exec``).
+        """
+        url = f"{self.server_url}/api/agent/{agent_sid}/inbox/poll"
+        params: dict[str, str] = {}
+        if since:
+            params["since"] = since
+        if include_reactions:
+            params["include_reactions"] = "true"
+
+        # Fast-fail timeout: this runs inside the inbox hook on every user
+        # prompt, so a network hiccup must not hang the prompt. The endpoint
+        # is non-blocking and normally answers in well under a second.
+        poll_timeout = httpx.Timeout(8.0, connect=3.0)
+        resp = httpx.get(url, headers=self._headers(), params=params, timeout=poll_timeout)
+        env_token = bool(os.environ.get("MEMORYBOT_TOKEN"))
+        if resp.status_code == 401 and not env_token and refresh_access_token(self.cfg, self.server_url):
+            resp = httpx.get(url, headers=self._headers(), params=params, timeout=poll_timeout)
+        if resp.status_code >= 400:
+            raise APIError(resp.status_code, resp.text)
+        return resp.json()
+
     # ---- High-level helpers (auto-batching, one round-trip per chunk) ----
 
     GET_BATCH_SIZE = 50
