@@ -37,3 +37,8 @@ Thumbs.db
 
 # PyPI publishing
 .pypirc
+
+# agent-local clock-in markers (machine state, never committed)
+.claude/active-agent
+.claude/active-agent-sid
+.claude/worktrees/
