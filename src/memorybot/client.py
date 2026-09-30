@@ -84,10 +84,14 @@ class Client:
         agent_sid: str,
         since: Optional[str] = None,
         include_reactions: bool = False,
+        session_id: Optional[str] = None,
     ) -> dict:
         """GET /api/agent/<sid>/inbox/poll — instant, non-blocking inbox read.
 
-        Returns ``{"messages": [...], "cursor": "<iso>", "threads": [...]}``.
+        Returns ``{"messages": [...], "cursor": "<iso>", "threads": [...]}``,
+        plus ``"warning"`` when ``session_id`` (the caller's own session, as
+        given to ``manage_agents summon``) is passed and the agent was
+        dismissed or summoned in a different session.
         Unlike the inbox *stream* endpoint this never long-polls: it returns
         whatever is queued right now plus a cursor to pass back next call.
         This is what the ``mb inbox`` command (and the UserPromptSubmit inbox
@@ -102,6 +106,8 @@ class Client:
             params["since"] = since
         if include_reactions:
             params["include_reactions"] = "true"
+        if session_id:
+            params["session_id"] = session_id
 
         # Fast-fail timeout: this runs inside the inbox hook on every user
         # prompt, so a network hiccup must not hang the prompt. The endpoint
