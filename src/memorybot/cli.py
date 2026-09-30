@@ -381,7 +381,12 @@ def inbox_cmd(
     no_cursor: bool = typer.Option(
         False, "--no-cursor", help="Don't read or write the persisted per-agent cursor file."
     ),
-    json: bool = typer.Option(False, "--json", help="Emit raw JSON {messages, cursor, threads}."),
+    session: Optional[str] = typer.Option(
+        None, "--session",
+        help="Your tool's session id, as given to manage_agents summon. Prints a warning "
+             "when this agent was dismissed or summoned in another session.",
+    ),
+    json: bool = typer.Option(False, "--json", help="Emit raw JSON {messages, cursor, threads, warning?}."),
     base_url: Optional[str] = typer.Option(None, "--base-url", help="Override server URL for this run."),
 ) -> None:
     """Pull new agent-to-agent DMs (instant, non-blocking).
@@ -390,6 +395,10 @@ def inbox_cmd(
     per-agent cursor so each surfaces exactly once. Prints NOTHING to stdout
     when the inbox is empty — so the output can be dropped straight into a
     UserPromptSubmit hook. This replaces the retired persistent inbox Monitor.
+
+    With --session, the same pull is the one-agent-one-session check: a
+    warning line is printed when the agent was dismissed or is recorded in a
+    different session, so any tool's prompt hook gets both in one call.
 
     Exit codes: 0 = success (with or without messages), 1 = API/network error,
     2 = bad arguments (missing --agent).
@@ -404,7 +413,7 @@ def inbox_cmd(
         effective_since = cursor_file.read_text().strip() or None
 
     try:
-        result = _client(base_url).inbox_poll(agent, since=effective_since)
+        result = _client(base_url).inbox_poll(agent, since=effective_since, session_id=session)
     except APIError as e:
         err_console.print(f"[red]API error:[/red] {e}")
         raise typer.Exit(code=1)
@@ -425,6 +434,14 @@ def inbox_cmd(
     if json:
         typer.echo(json_module.dumps(result, indent=2))
         return
+
+    warning = result.get("warning")
+    if warning:
+        # Plain stdout, like the messages, so a hook injects it as context.
+        sys.stdout.write(f"🛑 {warning}\n")
+        if messages:
+            sys.stdout.write("\n")
+        sys.stdout.flush()
 
     if messages:
         # Plain stdout (no rich markup) so a hook can inject it verbatim.
