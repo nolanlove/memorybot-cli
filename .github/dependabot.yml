@@ -1,0 +1,8 @@
+# Proposes updates to the commit-pinned GitHub Actions as reviewable PRs, so the
+# pins do not go stale (memory Issue BBXb7nnBVO).
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
